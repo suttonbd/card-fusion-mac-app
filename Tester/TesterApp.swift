@@ -10,7 +10,7 @@ import SwiftUI
 @main
 struct TesterApp: App {
     var body: some Scene {
-        WindowGroup {
+        Window("QR Scanner", id: "main") {
             ContentView()
         }
         .windowStyle(.hiddenTitleBar)
