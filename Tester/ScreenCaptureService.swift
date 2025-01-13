@@ -4,16 +4,26 @@ import CoreImage
 import Vision
 import AppKit
 
+// Structure to hold QR code data with position
+struct QRCodeWithPosition: Equatable {
+    let text: String
+    let xPosition: CGFloat
+    
+    static func == (lhs: QRCodeWithPosition, rhs: QRCodeWithPosition) -> Bool {
+        lhs.text == rhs.text
+    }
+}
+
 class ScreenCaptureService: ObservableObject {
     @Published var detectedQRCodes: [String] = []
     private var stream: SCStream?
     private let streamOutput = ScreenCaptureStreamOutput()
     
     // Track consecutive frames and timing
-    private var consecutiveFrames: [[String]] = []
+    private var consecutiveFrames: [[QRCodeWithPosition]] = []
     private let requiredConsecutiveFrames = 2
     private var lastFrameTime: Date?
-    private let staticThreshold: TimeInterval = 0.75 // Consider screen static after 0.75 seconds
+    private let staticThreshold: TimeInterval = 0.75
     
     init() {
         streamOutput.qrCodeHandler = { [weak self] codes in
@@ -24,10 +34,14 @@ class ScreenCaptureService: ObservableObject {
         }
     }
     
-    private func processNewFrame(_ codes: [String]) {
+    private func processNewFrame(_ codes: [(text: String, bounds: CGRect)]) {
         let currentTime = Date()
-        // Add new frame - sort the codes alphabetically after removing duplicates
-        let uniqueCodes = Self.uniqueElementsWithOrder(codes).sorted()
+        // Convert to QRCodeWithPosition and sort by x position
+        let positionedCodes = codes.map { QRCodeWithPosition(text: $0.text, xPosition: $0.bounds.minX) }
+            .sorted { $0.xPosition < $1.xPosition }
+        
+        // Remove duplicates keeping leftmost occurrence
+        let uniqueCodes = Self.uniqueElementsWithOrder(positionedCodes)
         consecutiveFrames.append(uniqueCodes)
         
         // Keep only the last N frames
@@ -35,35 +49,35 @@ class ScreenCaptureService: ObservableObject {
             consecutiveFrames.removeFirst()
         }
         
-        // Check if screen is static (no frames received for a while)
+        // Check if screen is static
         if let lastTime = lastFrameTime,
            currentTime.timeIntervalSince(lastTime) >= staticThreshold,
            !consecutiveFrames.isEmpty {
-            // Screen is static, use the last frame
-            let sortedCurrentCodes = detectedQRCodes.sorted()
-            if sortedCurrentCodes != consecutiveFrames.last {
-                detectedQRCodes = consecutiveFrames.last ?? []
-            }
+            updateDetectedCodes(consecutiveFrames.last ?? [])
         }
-        // Otherwise check for consecutive matching frames
+        // Check for consecutive matching frames
         else if consecutiveFrames.count == requiredConsecutiveFrames &&
                 consecutiveFrames.allSatisfy({ $0 == consecutiveFrames[0] }) {
-            let sortedCurrentCodes = detectedQRCodes.sorted()
-            if sortedCurrentCodes != consecutiveFrames[0] {
-                detectedQRCodes = consecutiveFrames[0]
-            }
+            updateDetectedCodes(consecutiveFrames[0])
         }
         
         lastFrameTime = currentTime
     }
     
-    private static func uniqueElementsWithOrder(_ array: [String]) -> [String] {
+    private func updateDetectedCodes(_ codes: [QRCodeWithPosition]) {
+        let newCodes = codes.map { $0.text }
+        if newCodes != detectedQRCodes {
+            detectedQRCodes = newCodes
+        }
+    }
+    
+    private static func uniqueElementsWithOrder(_ array: [QRCodeWithPosition]) -> [QRCodeWithPosition] {
         var seen = Set<String>()
         return array.filter { element in
-            if seen.contains(element) {
+            if seen.contains(element.text) {
                 return false
             } else {
-                seen.insert(element)
+                seen.insert(element.text)
                 return true
             }
         }
@@ -91,7 +105,11 @@ class ScreenCaptureService: ObservableObject {
 }
 
 class ScreenCaptureStreamOutput: NSObject, SCStreamOutput {
-    var qrCodeHandler: (([String]) -> Void)?
+    var qrCodeHandler: (([(text: String, bounds: CGRect)]) -> Void)?
+    
+    override init() {
+        super.init()
+    }
     
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen,
@@ -108,7 +126,8 @@ class ScreenCaptureStreamOutput: NSObject, SCStreamOutput {
             let codes = request.results?
                 .compactMap { $0 as? VNBarcodeObservation }
                 .filter { $0.symbology == .qr }
-                .compactMap { $0.payloadStringValue } ?? []
+                .map { ($0.payloadStringValue ?? "", $0.boundingBox) }
+                .filter { $0.0.isEmpty == false } ?? []
             
             self?.qrCodeHandler?(codes)
         }
