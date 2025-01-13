@@ -16,14 +16,18 @@ struct QRCodeWithPosition: Equatable {
 
 class ScreenCaptureService: ObservableObject {
     @Published var detectedQRCodes: [String] = []
+    @Published var userOrderedCodes: [String] = []  // New array for user-ordered codes
     private var stream: SCStream?
+    private var display: SCDisplay?
     private let streamOutput = ScreenCaptureStreamOutput()
+    private var updateTimer: Timer?
     
     // Track consecutive frames and timing
     private var consecutiveFrames: [[QRCodeWithPosition]] = []
     private let requiredConsecutiveFrames = 2
     private var lastFrameTime: Date?
-    private let staticThreshold: TimeInterval = 0.75
+    private let staticThreshold: TimeInterval = 0.3
+    private var lastProcessedCodes: [QRCodeWithPosition] = []
     
     init() {
         streamOutput.qrCodeHandler = { [weak self] codes in
@@ -32,6 +36,36 @@ class ScreenCaptureService: ObservableObject {
                 self.processNewFrame(codes)
             }
         }
+        
+        // Create a timer to periodically force a screen capture
+        updateTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Force update if no frames received recently OR after reordering
+            if let lastTime = self.lastFrameTime,
+               Date().timeIntervalSince(lastTime) >= self.staticThreshold {
+                Task {
+                    await self.forceScreenCapture()
+                }
+            }
+        }
+    }
+    
+    private func forceScreenCapture() async {
+        guard let stream = stream, let display = display else { return }
+        do {
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(display.width * 2)
+            configuration.height = Int(display.height * 2)
+            configuration.minimumFrameInterval = CMTime(value: 1, timescale: 2)
+            try await stream.updateConfiguration(configuration)
+        } catch {
+            print("Failed to force screen capture: \(error)")
+        }
+    }
+    
+    deinit {
+        updateTimer?.invalidate()
     }
     
     private func processNewFrame(_ codes: [(text: String, bounds: CGRect)]) {
@@ -42,23 +76,25 @@ class ScreenCaptureService: ObservableObject {
         
         // Remove duplicates keeping leftmost occurrence
         let uniqueCodes = Self.uniqueElementsWithOrder(positionedCodes)
-        consecutiveFrames.append(uniqueCodes)
         
-        // Keep only the last N frames
-        if consecutiveFrames.count > requiredConsecutiveFrames {
-            consecutiveFrames.removeFirst()
+        // Always update if codes are different from last processed
+        if uniqueCodes != lastProcessedCodes {
+            updateDetectedCodes(uniqueCodes)
+            lastProcessedCodes = uniqueCodes
+            consecutiveFrames.removeAll() // Reset frame matching after direct update
         }
-        
-        // Check if screen is static
-        if let lastTime = lastFrameTime,
-           currentTime.timeIntervalSince(lastTime) >= staticThreshold,
-           !consecutiveFrames.isEmpty {
-            updateDetectedCodes(consecutiveFrames.last ?? [])
-        }
-        // Check for consecutive matching frames
-        else if consecutiveFrames.count == requiredConsecutiveFrames &&
+        // For unchanged codes, still use frame matching
+        else {
+            consecutiveFrames.append(uniqueCodes)
+            
+            if consecutiveFrames.count > requiredConsecutiveFrames {
+                consecutiveFrames.removeFirst()
+            }
+            
+            if consecutiveFrames.count == requiredConsecutiveFrames &&
                 consecutiveFrames.allSatisfy({ $0 == consecutiveFrames[0] }) {
-            updateDetectedCodes(consecutiveFrames[0])
+                updateDetectedCodes(consecutiveFrames[0])
+            }
         }
         
         lastFrameTime = currentTime
@@ -68,6 +104,10 @@ class ScreenCaptureService: ObservableObject {
         let newCodes = codes.map { $0.text }
         if newCodes != detectedQRCodes {
             detectedQRCodes = newCodes
+            // Initialize user order if it's empty or contains different codes
+            if userOrderedCodes.isEmpty || !userOrderedCodes.containsAll(elements: newCodes) {
+                userOrderedCodes = newCodes
+            }
         }
     }
     
@@ -87,6 +127,7 @@ class ScreenCaptureService: ObservableObject {
         do {
             let content = try await SCShareableContent.current
             guard let display = content.displays.first else { return }
+            self.display = display
             
             let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
             
@@ -100,6 +141,16 @@ class ScreenCaptureService: ObservableObject {
             try await stream?.startCapture()
         } catch {
             print("Failed to start capture: \(error)")
+        }
+    }
+    
+    // Function to handle reordering
+    func reorderCodes(fromIndex: Int, toIndex: Int) {
+        userOrderedCodes.move(fromOffsets: IndexSet(integer: fromIndex),
+                            toOffset: toIndex)
+        // Force an immediate screen capture after reordering
+        Task {
+            await forceScreenCapture()
         }
     }
 }
@@ -134,5 +185,15 @@ class ScreenCaptureStreamOutput: NSObject, SCStreamOutput {
         
         let handler = VNImageRequestHandler(ciImage: image)
         try? handler.perform([request])
+    }
+}
+
+// Helper extension
+extension Array where Element: Equatable {
+    func containsAll(elements: [Element]) -> Bool {
+        // Check if both arrays contain the same elements (order independent)
+        let sortedSelf = self.sorted { "\($0)" < "\($1)" }
+        let sortedElements = elements.sorted { "\($0)" < "\($1)" }
+        return sortedSelf == sortedElements
     }
 } 
