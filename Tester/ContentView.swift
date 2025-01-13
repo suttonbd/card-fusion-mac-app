@@ -32,11 +32,11 @@ struct ContentView: View {
                                     
                                     // Badge - use position from original detected order
                                     Text("\(captureService.detectedQRCodes.firstIndex(of: code)! + 1)")
-                                        .font(.system(size: 14, weight: .bold))
+                                        .font(.system(size: 20, weight: .bold))
                                         .foregroundColor(.white)
-                                        .padding(6)
+                                        .padding(8)
                                         .background(Circle().fill(Color.blue))
-                                        .offset(x: -8, y: -8)
+                                        .offset(x: -10, y: -10)
                                 }
                                 .contentShape(Rectangle())
                                 .onDrag {

@@ -16,7 +16,7 @@ struct QRCodeWithPosition: Equatable {
 
 class ScreenCaptureService: ObservableObject {
     @Published var detectedQRCodes: [String] = []
-    @Published var userOrderedCodes: [String] = []  // New array for user-ordered codes
+    @Published var userOrderedCodes: [String] = []
     private var stream: SCStream?
     private var display: SCDisplay?
     private let streamOutput = ScreenCaptureStreamOutput()
@@ -104,9 +104,19 @@ class ScreenCaptureService: ObservableObject {
         let newCodes = codes.map { $0.text }
         if newCodes != detectedQRCodes {
             detectedQRCodes = newCodes
-            // Initialize user order if it's empty or contains different codes
-            if userOrderedCodes.isEmpty || !userOrderedCodes.containsAll(elements: newCodes) {
+            
+            // Update userOrderedCodes while preserving order
+            if userOrderedCodes.isEmpty {
+                // First detection, just use the detected order
                 userOrderedCodes = newCodes
+            } else {
+                // Keep existing items in their current order
+                let existingCodes = userOrderedCodes.filter { newCodes.contains($0) }
+                
+                // Add new items to the end
+                let newItems = newCodes.filter { !userOrderedCodes.contains($0) }
+                
+                userOrderedCodes = existingCodes + newItems
             }
         }
     }
